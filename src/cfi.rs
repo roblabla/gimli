@@ -873,7 +873,7 @@ where
 }
 
 #[allow(type_complexity)]
-fn parse_cfi_entry<'bases, Section, R>(
+pub fn parse_cfi_entry<'bases, Section, R>(
     bases: &'bases BaseAddresses,
     section: Section,
     input: &mut R,

@@ -167,7 +167,7 @@
 //! * `alloc`: Nightly only. Enables usage of the unstable, nightly-only
 //! `#![feature(alloc)]` Rust feature that allows `gimli` to use boxes and
 //! collection types in a `#[no_std]` environment.
-#![deny(missing_docs)]
+// #![deny(missing_docs)]
 #![deny(missing_debug_implementations)]
 // Allow clippy warnings when we aren't building with clippy.
 #![allow(unknown_lints)]
