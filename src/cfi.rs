@@ -500,7 +500,7 @@ pub trait UnwindSection<R: Reader>: Clone + Debug + _UnwindSectionPrivate<R> {
         ctx: UninitializedUnwindContext<Self, R>,
         address: u64,
     ) -> UnwindResult<
-        (UnwindTableRow<R>, UninitializedUnwindContext<Self, R>),
+        (UnwindTableRow<R, Self>, UninitializedUnwindContext<Self, R>),
         UninitializedUnwindContext<Self, R>,
     > {
         let mut entries = self.entries(bases);
@@ -1810,7 +1810,7 @@ where
 }
 
 const MAX_UNWIND_STACK_DEPTH: usize = 4;
-type UnwindContextStack<R> = ArrayVec<[UnwindTableRow<R>; MAX_UNWIND_STACK_DEPTH]>;
+type UnwindContextStack<R, S> = ArrayVec<[UnwindTableRow<R, S>; MAX_UNWIND_STACK_DEPTH]>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct UnwindContext<Section, R>
@@ -1821,7 +1821,7 @@ where
     // Stack of rows. The last row is the row currently being built by the
     // program. There is always at least one row. The vast majority of CFI
     // programs will only ever have one row on the stack.
-    stack: UnwindContextStack<R>,
+    stack: UnwindContextStack<R, Section>,
 
     // If we are evaluating an FDE's instructions, then `is_initialized` will be
     // `true` and `initial_rules` will contain the initial register rules
@@ -1876,11 +1876,11 @@ where
         assert!(self.stack[0].is_default());
     }
 
-    fn row(&self) -> &UnwindTableRow<R> {
+    fn row(&self) -> &UnwindTableRow<R, Section> {
         self.stack.last().unwrap()
     }
 
-    fn row_mut(&mut self) -> &mut UnwindTableRow<R> {
+    fn row_mut(&mut self) -> &mut UnwindTableRow<R, Section> {
         self.stack.last_mut().unwrap()
     }
 
@@ -2060,7 +2060,7 @@ where
     ///
     /// Unfortunately, this cannot be used with `FallibleIterator` because of
     /// the restricted lifetime of the yielded item.
-    pub fn next_row(&mut self) -> Result<Option<&UnwindTableRow<R>>> {
+    pub fn next_row(&mut self) -> Result<Option<&UnwindTableRow<R, Section>>> {
         assert!(self.ctx.stack.len() >= 1);
         self.ctx.set_start_address(self.next_start_address);
 
@@ -2085,7 +2085,10 @@ where
                 }
 
                 Ok(Some(instruction)) => if self.evaluate(instruction)? {
-                    return Ok(Some(self.ctx.row()));
+                    let row = self.ctx.row_mut();
+                    row.cie = Some(self.cie.clone());
+                    row.fde = self.fde.map(|v| v.clone());
+                    return Ok(Some(row));
                 },
             };
         }
@@ -2405,17 +2408,21 @@ impl<'iter, R: Reader> Iterator for RegisterRuleIter<'iter, R> {
 /// A row in the virtual unwind table that describes how to find the values of
 /// the registers in the *previous* frame for a range of PC addresses.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct UnwindTableRow<R: Reader> {
+pub struct UnwindTableRow<R: Reader, Section: UnwindSection<R>> {
     start_address: u64,
     end_address: u64,
     cfa: CfaRule<R>,
+    cie: Option<CommonInformationEntry<Section, R, R::Offset>>,
+    fde: Option<FrameDescriptionEntry<Section, R, R::Offset>>,
     registers: RegisterRuleMap<R>,
 }
 
-impl<R: Reader> Default for UnwindTableRow<R> {
+impl<R: Reader, S: UnwindSection<R>> Default for UnwindTableRow<R, S> {
     fn default() -> Self {
         UnwindTableRow {
             start_address: 0,
+            cie: None,
+            fde: None,
             end_address: 0,
             cfa: Default::default(),
             registers: Default::default(),
@@ -2423,7 +2430,7 @@ impl<R: Reader> Default for UnwindTableRow<R> {
     }
 }
 
-impl<R: Reader> UnwindTableRow<R> {
+impl<R: Reader, S: UnwindSection<R>> UnwindTableRow<R, S> {
     fn is_default(&self) -> bool {
         self.start_address == 0 && self.end_address == 0 && self.cfa.is_default()
             && self.registers.is_default()
@@ -2454,6 +2461,16 @@ impl<R: Reader> UnwindTableRow<R> {
     /// Get the canonical frame address (CFA) recovery rule for this row.
     pub fn cfa(&self) -> &CfaRule<R> {
         &self.cfa
+    }
+
+    /// Returns cie
+    pub fn cie(&self) -> &CommonInformationEntry<S, R, R::Offset> {
+        self.cie.as_ref().expect("CommonInformationEntry to be present")
+    }
+
+    /// Returns fde
+    pub fn fde(&self) -> &Option<FrameDescriptionEntry<S, R, R::Offset>> {
+        &self.fde
     }
 
     /// Get the register recovery rule for the given register number.
@@ -5163,6 +5180,7 @@ mod tests {
         {
             let row = table.next_row().expect("Should evaluate first row OK");
             let expected = UnwindTableRow {
+                cie: fde.cie().clone(),
                 start_address: 0,
                 end_address: 1,
                 cfa: CfaRule::RegisterAndOffset {
